@@ -1,18 +1,17 @@
 ﻿// CabinSwap - replaces the Cannery Worker Residences house in Bleak Inlet with the Mindful Cabin from Forsaken Airfield.
 //
 // Mods/CabinSwap/:
-//   mindfulcabin.bundle - the cabin's looks and collision, plus the doors, sink cabinet and water tank
-//                         with the game's script names
-//   originals.json      - the original Mindful Cabin's settings for the working parts with scripts attached
+//   mindfulcabin.bundle - the cabin's looks and collision; everything inside keeps the game's script names
+//   originals.json      - the original Mindful Cabin interior's settings, recorded once in Forsaken Airfield
 //
 // When Bleak Inlet loads, the mod:
 //   1. places the cabin and hides the old house
 //   2. gives the cabin the game's own materials and shaders
-//   3. writes the original settings into the doors, sink cabinet and water tank
-//   4. adds the stove, bed and trunk from the game's own prefabs
-//   5. adds Bleak Inlet's indoor-space and snow-blocking volumes
-//   6. turns the water tank into a 20 L water storage
-//   7. levels the ground and removes the grass underr the cabin
+//   3. writes the original settings into everything inside (doors, cabinets, stove, bed, trunk, decorations)
+//   4. adds Bleak Inlet's indoor-space and snow-blocking volumes
+//   5. turns the water tank into a 20 L water storage
+//   6. levels the ground and removes the grass under the cabin
+//   7. moves, copies and replaces the Bleak Inlet objects listed in MovedObjects, CopiedObjects and ReplacedObjects
 
 using System.Collections;
 using System.Text.Json;
@@ -27,8 +26,10 @@ using UnityEngine.Events;
 using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
 
-[assembly: MelonInfo(typeof(CabinSwap.CabinSwapMod), "CabinSwap", "2.0.1", "KanarieWilfried")]
+[assembly: MelonInfo(typeof(CabinSwap.CabinSwapMod), "CabinSwap", "2.0", "KanarieWilfried")]
 [assembly: MelonGame("Hinterland", "TheLongDark")]
+// Runs before other mods (default 0), so the cabin exists when e.g. Safehouse Customization Plus scans the scene
+[assembly: MelonPriority(-100)]
 
 namespace CabinSwap
 {
@@ -42,20 +43,45 @@ namespace CabinSwap
         static readonly Vector3 CabinRotation = new Vector3(0f, 353.0534f, 0f);
         const string OldHousePath = "Art/Structures/Houses/STR_WoodCabinA_Prefab";
 
+        // Bleak Inlet objects to move
+        // path = the object's full path in UnityExplorer;
+        // position, rotation and scale = the values from unity explorer (Position, Rotation, Scale) after you've placed it there.
+        // Objects in Bleak Inlet's sub-scenes (e.g. CanneryRegion_SANDBOX) work too.
+        // Several objects with the same path? Two ways to pick one:
+        //  (moosemeat method, thank you bro <3) "[n]" after a name: the child at position n under its parent, counting ALL children from 0 in UnityExplorer's order
+        //   "@x,y,z" at the end: the one whose ORIGINAL position (before any moving) is there
+        static readonly (string path, Vector3 position, Vector3 rotation, Vector3 scale)[] MovedObjects =
+        {
+            ("Art/Trees/TRN_PineTreeLog_SingleC1_Prefab (3)",
+                new Vector3(200.6389f, 20.62f, -395.8405f), new Vector3(299.9551f, 335.9424f, 312.673f), new Vector3(1f, 1f, 1f)),
+        };
+
+        // path = the object to hide; copyFrom = the object to copy; then the copy's position, rotation, scale.
+        static readonly (string path, string copyFrom, Vector3 position, Vector3 rotation, Vector3 scale)[] ReplacedObjects =
+        {
+            ("Art/Docks/OBJ_DockShortEndCapB_Prefab@166.9531,24.8526,-451.0543",
+                "Art/Structures/LighthouseIsland/OBJ_DockShortEndCapB_Prefab",
+                new Vector3(166.9531f, 24.7526f, -450.7544f), new Vector3(337.9621f, 0f, 19.9666f), new Vector3(1f, 1f, 1f)),
+        };
+
+        // Copies of Bleak Inlet objects: the path of the object to copy, and where the copy goes.
+        // Same values as above. The same object can be copied several times (one line per copy).
+        static readonly (string path, Vector3 position, Vector3 rotation, Vector3 scale)[] CopiedObjects =
+        {
+            ("Art/Structures/LighthouseIsland/OBJ_DockSteps_Prefab (1)",
+                new Vector3(129.8f, 28.38f, -434.24f), new Vector3(359.8419f, 172.5264f, 345.3203f), new Vector3(1f, 1f, 1.05f)),
+            ("Art/Structures/LighthouseIsland/OBJ_DockSteps_Prefab (1)",
+                new Vector3(127.55f, 26.9255f, -434.54f), new Vector3(359.8419f, 172.5264f, 345.3203f), new Vector3(1f, 1f, 1.05f)),
+            ("Art/Structures/LighthouseIsland/OBJ_DockSteps_Prefab (1)",
+                new Vector3(125.3f, 25.471f, -434.84f), new Vector3(359.8419f, 172.5264f, 345.3203f), new Vector3(1f, 1f, 1.05f)),
+        };
+
         // Files in Mods/CabinSwap/
         const string ModFolder = "CabinSwap";
         const string BundleFile = "mindfulcabin.bundle";
         const string PrefabName = "MindfulCabin";
         const string OriginalsFile = "originals.json";
         const string DummyPrefix = "CabinSwapDummy/";
-
-        // Working parts from the game's own prefabs (position/rotation relative to the cabin)
-        static readonly (string name, Vector3 pos, Vector3 rot)[] Interactives =
-        {
-            ("INTERACTIVE_PotBellyStove", new Vector3(-0.976f, 0.046f, 1.886f), new Vector3(0f,   0f,    0f)),
-            ("INTERACTIVE_BedMattressG",  new Vector3(-3.712f, 2.964f, 0.798f), new Vector3(0f, 170.70f, 0f)),
-            ("CONTAINER_SteamerTrunk",    new Vector3( 3.670f, 0.000f, 1.220f), new Vector3(0f, 100.52f, 0f)),
-        };
 
         // Shelter volumes: marker in the cabin -> Bleak Inlet object that has the game logic
         static readonly (string marker, string bleakInletSource)[] ShelterVolumes =
@@ -112,14 +138,142 @@ namespace CabinSwap
                 _storedUnits = 0;
             }
 
-            if (sceneName == "CanneryRegion")
-                MelonCoroutines.Start(SwapCabin());
         }
 
-        IEnumerator SwapCabin()
+        public override void OnSceneWasInitialized(int buildIndex, string sceneName)
         {
-            yield return new WaitForSeconds(0.2f);                  // let the region finish setting up
+            if (!sceneName.StartsWith("CanneryRegion")) return;
 
+            // The cabin is built here, once Bleak Inlet's main scene has been set up: the same moment other mods look through the scene (for Safehouse Customization Plus compatibility)
+            if (sceneName == "CanneryRegion")
+                SwapCabin();
+
+            Scene scene = SceneManager.GetSceneByName(sceneName);
+            MoveObjects(scene);
+            CopyObjects(scene);
+            ReplaceObjects(scene);
+        }
+
+
+        static void MoveObjects(Scene scene)
+        {
+            foreach (var (path, position, rotation, scale) in MovedObjects)
+            {
+                Transform t = FindInScene(scene, path);
+                if (t == null) continue;                                 // not in this one of the region's scenes
+                t.SetPositionAndRotation(position, Quaternion.Euler(rotation));
+                t.localScale = scale;
+            }
+        }
+
+        static void CopyObjects(Scene scene)
+        {
+            for (int i = 0; i < CopiedObjects.Length; i++)
+            {
+                var (path, position, rotation, scale) = CopiedObjects[i];
+                Transform source = FindInScene(scene, path);
+                if (source == null) continue;                            // not in this one of the region's scenes
+                PlaceCopy(source, scene, position, rotation, scale, $"{source.name} (CabinSwap copy {i})");
+            }
+        }
+
+        static void ReplaceObjects(Scene scene)
+        {
+            foreach (var (path, copyFrom, position, rotation, scale) in ReplacedObjects)
+            {
+                Transform original = FindInScene(scene, path);
+                Transform source = FindInScene(scene, copyFrom);
+                if (original == null || source == null) continue;        // not in this one of the region's scenes
+
+                PlaceCopy(source, scene, position, rotation, scale, original.name + " (CabinSwap)");
+                original.gameObject.SetActive(false);                    // also takes it out of the combined mesh
+            }
+        }
+
+        static void PlaceCopy(Transform source, Scene scene, Vector3 position, Vector3 rotation, Vector3 scale, string name)
+        {
+            // Made under a switched-off holder, so the copy only switches on once it's in place
+            GameObject holder = new GameObject("CabinSwap_CopyHolder");
+            holder.SetActive(false);
+            SceneManager.MoveGameObjectToScene(holder, scene);
+            GameObject copy = GameObject.Instantiate<GameObject>(source.gameObject, holder.transform, false);
+            copy.name = name;
+
+            // Placed first, then moved next to the original (keeping its place) - that switches it on
+            copy.transform.SetPositionAndRotation(position, Quaternion.Euler(rotation));
+            copy.transform.SetParent(source.parent, true);
+            copy.transform.localScale = scale;
+            GameObject.Destroy(holder);
+        }
+
+        const float NearTolerance = 0.5f;                               // metres, for "@x,y,z"
+
+        // Every object in the scene that fits the path - following ALL branches, since parents can share a name too - then the one at "@x,y,z" if given, otherwise the first.
+        static Transform FindInScene(Scene scene, string path)
+        {
+            Vector3? near = null;
+            int at = path.LastIndexOf('@');
+            if (at > 0)
+            {
+                string[] xyz = path.Substring(at + 1).Split(',');
+                near = new Vector3(ParseFloat(xyz[0]), ParseFloat(xyz[1]), ParseFloat(xyz[2]));
+                path = path.Substring(0, at);
+            }
+
+            var current = new List<Transform>();
+            bool first = true;
+            foreach (string segment in path.Split('/'))
+            {
+                (string name, int index) = SplitIndex(segment);
+                var next = new List<Transform>();
+
+                if (first)                                               // the first name: one of the scene's top objects
+                {
+                    GameObject[] roots = scene.GetRootGameObjects();
+                    for (int i = 0; i < roots.Length; i++)
+                        if (roots[i].name == name && (index < 0 || index == i)) next.Add(roots[i].transform);
+                    first = false;
+                }
+                else
+                {
+                    foreach (Transform parent in current)
+                        for (int i = 0; i < parent.childCount; i++)
+                        {
+                            Transform child = parent.GetChild(i);
+                            if (child.name == name && (index < 0 || index == i)) next.Add(child);
+                        }
+                }
+
+                if (next.Count == 0) return null;
+                current = next;
+            }
+
+            if (near == null) return current[0];
+
+            Transform best = null;
+            float bestDistance = NearTolerance;
+            foreach (Transform t in current)
+            {
+                float d = Vector3.Distance(t.position, near.Value);
+                if (d <= bestDistance) { best = t; bestDistance = d; }
+            }
+            return best;
+        }
+
+        static float ParseFloat(string s) => float.Parse(s.Trim(), System.Globalization.CultureInfo.InvariantCulture);
+
+        // "OBJ_DockShortEndCapB_Prefab[3]" -> ("OBJ_DockShortEndCapB_Prefab", 3); no "[n]" -> (name, -1)
+        static (string name, int index) SplitIndex(string segment)
+        {
+            int open = segment.LastIndexOf('[');
+            if (open > 0 && segment.EndsWith("]") &&
+                int.TryParse(segment.Substring(open + 1, segment.Length - open - 2), out int index) && index >= 0)
+                return (segment.Substring(0, open), index);
+            return (segment, -1);
+        }
+
+        void SwapCabin()
+        {
             // Everything is built while switched off, so the game's scripts start with their final settings
             GameObject root = new GameObject(RootName);
             root.SetActive(false);
@@ -132,7 +286,6 @@ namespace CabinSwap
             FixMaterials(cabin);
             ApplyOriginalSettings(cabin.transform);
             SetupWaterStorage(cabin.transform);
-            AddInteractives(root.transform);
             AddShelterVolumes(cabin.transform);
             root.SetActive(true);
 
@@ -205,30 +358,6 @@ namespace CabinSwap
                 _gameMaterials[name] = material;
             }
             return material;
-        }
-
-        static void AddInteractives(Transform root)
-        {
-            foreach (var (name, pos, rot) in Interactives)
-            {
-                GameObject prefab = Addressables.LoadAssetAsync<GameObject>(FindPrefabKey(name)).WaitForCompletion();
-                GameObject go = GameObject.Instantiate<GameObject>(prefab, root, false);
-                go.name = name;
-                go.transform.localPosition = pos;
-                go.transform.localRotation = Quaternion.Euler(rot);
-            }
-        }
-
-        // Exact match first, then the shortest prefab whose file name starts with the name
-        static string FindPrefabKey(string name)
-        {
-            string exact = ResolveKey(name + ".prefab");
-            if (exact != null) return exact;
-            return _allKeys
-                .Where(k => k.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase) &&
-                            Path.GetFileNameWithoutExtension(k).StartsWith(name, StringComparison.OrdinalIgnoreCase))
-                .OrderBy(k => k.Length)
-                .FirstOrDefault();
         }
 
         // Copies Bleak Inlet's own indoor-space and snow-blocking objects onto the cabin's markers
