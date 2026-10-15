@@ -25,7 +25,7 @@ A the Long Dark mod that replaces the house at the Cannery Worker Residences in 
 
 This mod basically turned into a proof of concept on how to move objects from one scene into another.
 
-I created a guide here: COMING SOON
+I created a guide here: [TLD modding: bringing objects from one scene into another /by KanarieWilfried.md](https://cdn.discordapp.com/attachments/1386353992765935647/1553063021494927531/Cross_Scene_Object_Guide.md?ex=6ad0eea6&is=6acf9d26&hm=bf09252ea37194879ac01edaccd9afbc25cb0fa9cb20de1123a4eeffcbe6d747&)
 
 
 
