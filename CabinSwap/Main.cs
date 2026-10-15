@@ -8,7 +8,7 @@
 //   1. places the cabin and hides the old house
 //   2. gives the cabin the game's own materials and shaders
 //   3. writes the original settings into everything inside (doors, cabinets, stove, bed, trunk, decorations)
-//   4. adds Bleak Inlet's indoor-space and snow-blocking volumes
+//   4. adds Bleak Inlet's indoor-space and snow-blocking volumes, and gives the cabin's objects fixed save IDs
 //   5. turns the water tank into a 20 L water storage
 //   6. levels the ground and removes the grass under the cabin
 //   7. moves, copies and replaces the Bleak Inlet objects listed in MovedObjects, CopiedObjects and ReplacedObjects
@@ -20,13 +20,14 @@ using Il2CppInterop.Runtime;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using Il2CppSystem.Reflection;
 using MelonLoader.Utils;
+using UnityEngine.AI;
 using UnityEngine.AddressableAssets;
 using UnityEngine.AddressableAssets.ResourceLocators;
 using UnityEngine.Events;
 using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
 
-[assembly: MelonInfo(typeof(CabinSwap.CabinSwapMod), "CabinSwap", "2.0", "KanarieWilfried")]
+[assembly: MelonInfo(typeof(CabinSwap.CabinSwapMod), "CabinSwap", "3.2.0", "KanarieWilfried")]
 [assembly: MelonGame("Hinterland", "TheLongDark")]
 // Runs before other mods (default 0), so the cabin exists when e.g. Safehouse Customization Plus scans the scene
 [assembly: MelonPriority(-100)]
@@ -43,19 +44,33 @@ namespace CabinSwap
         static readonly Vector3 CabinRotation = new Vector3(0f, 353.0534f, 0f);
         const string OldHousePath = "Art/Structures/Houses/STR_WoodCabinA_Prefab";
 
-        // Bleak Inlet objects to move
-        // path = the object's full path in UnityExplorer;
-        // position, rotation and scale = the values from unity explorer (Position, Rotation, Scale) after you've placed it there.
-        // Objects in Bleak Inlet's sub-scenes (e.g. CanneryRegion_SANDBOX) work too.
+        // Other Bleak Inlet objects to move, to tie the area together.
+        // path = the object's full path in UnityExplorer; position, rotation and scale = the values from its
+        // Inspector (Position, Rotation, Scale) after you've placed it there. Objects in Bleak Inlet's
+        // sub-scenes (e.g. CanneryRegion_SANDBOX) work too. Every value needs an "f": 172.5f
         // Several objects with the same path? Two ways to pick one:
-        //  (moosemeat method, thank you bro <3) "[n]" after a name: the child at position n under its parent, counting ALL children from 0 in UnityExplorer's order
-        //   "@x,y,z" at the end: the one whose ORIGINAL position (before any moving) is there
+        //   "@x,y,z" at the end: the one whose ORIGINAL position (before any moving) is there, within half a
+        //            metre - works however they're grouped: "Art/Docks/OBJ_DockShortEndCapB_Prefab@166.1,26.5,-448.3"
+        //   "[n]" after a name: the child at position n under its parent, counting ALL children from 0 in
+        //            UnityExplorer's order (moosemeat's method); it must also have that name, otherwise it's skipped.
+        // Without either, the first object with that path is used.
         static readonly (string path, Vector3 position, Vector3 rotation, Vector3 scale)[] MovedObjects =
         {
             ("Art/Trees/TRN_PineTreeLog_SingleC1_Prefab (3)",
                 new Vector3(200.6389f, 20.62f, -395.8405f), new Vector3(299.9551f, 335.9424f, 312.673f), new Vector3(1f, 1f, 1f)),
+            ("CabinSwap_MindfulCabin/MindfulCabin/OBJ_SmallHutA_Prefab",
+                new Vector3(171.8819f, 29.7218f, -416.0837f), new Vector3(-0f, 89.1832f, 0f), new Vector3(1f, 1f, 1f)),
+            ("Wildlife/Bear/SPAWNREGION_BearDen_cabin/Props/OBJ_BonesBearA_Prefab",
+                new Vector3(171.8819f, -29.7218f, -416.0837f), new Vector3(-0f, 89.1832f, 0f), new Vector3(1f, 1f, 1f)),
+            ("Wildlife/Bear/SPAWNREGION_BearDen_cabin/Props/OBJ_BonesBearB_Prefab",
+                new Vector3(171.8819f, -29.7218f, -416.0837f), new Vector3(-0f, 89.1832f, 0f), new Vector3(1f, 1f, 1f)),
+            ("Wildlife/Bear/SPAWNREGION_BearDen_cabin/Props/OBJ_BonesBearC_Prefab",
+                new Vector3(171.8819f, -29.7218f, -416.0837f), new Vector3(-0f, 89.1832f, 0f), new Vector3(1f, 1f, 1f)),
         };
 
+        // Objects that don't visibly move: the game merges many fixed objects (docks, buildings) into large
+        // combined meshes, so moving one only moves its collision. These are hidden instead, and a copy of
+        // another instance of the same object that isn't merged takes their place.
         // path = the object to hide; copyFrom = the object to copy; then the copy's position, rotation, scale.
         static readonly (string path, string copyFrom, Vector3 position, Vector3 rotation, Vector3 scale)[] ReplacedObjects =
         {
@@ -66,6 +81,7 @@ namespace CabinSwap
 
         // Copies of Bleak Inlet objects: the path of the object to copy, and where the copy goes.
         // Same values as above. The same object can be copied several times (one line per copy).
+        // Meant for scenery: a copy shares the original's save ID, so don't copy containers.
         static readonly (string path, Vector3 position, Vector3 rotation, Vector3 scale)[] CopiedObjects =
         {
             ("Art/Structures/LighthouseIsland/OBJ_DockSteps_Prefab (1)",
@@ -97,6 +113,10 @@ namespace CabinSwap
         const float FalloffDistance = 3f;       // how far the ground slopes back to its original shape
         const float GroundBelowFloor = 0.05f;   // the ground ends up this far below the cabin floor
         const float GrassMargin = 0.3f;         // grass is cleared this far beyond the roof edges
+
+        // Animals follow Bleak Inlet's navigation map, baked around the old (smaller) house, not the walls.
+        // A navigation obstacle over the cabin's footprint (FlatMin..FlatMax) cuts it out of that map.
+        const float AnimalBlockHeight = 5f;     // from just below the floor to above the roof ridge
         static readonly string[] GrassObjectWords = { "grass", "weed", "reed", "fern", "plant", "shrub" };
 
         // Water storage
@@ -140,11 +160,15 @@ namespace CabinSwap
 
         }
 
+        // Moving and copying wait until a scene has been set up, not just loaded (the moment moosemeat's mods
+        // use too). The main scene and each sub-scene: whatever this scene contains from the lists is handled.
         public override void OnSceneWasInitialized(int buildIndex, string sceneName)
         {
             if (!sceneName.StartsWith("CanneryRegion")) return;
 
-            // The cabin is built here, once Bleak Inlet's main scene has been set up: the same moment other mods look through the scene (for Safehouse Customization Plus compatibility)
+            // The cabin is built here once Bleak Inlet's main scene has been set up - unless the game already
+            // needed it earlier to restore saved states (see BuildCabinBeforeRestore). Safehouse Customization
+            // Plus looks through the scene at this moment too (it makes stoves movable then).
             if (sceneName == "CanneryRegion")
                 SwapCabin();
 
@@ -208,7 +232,8 @@ namespace CabinSwap
 
         const float NearTolerance = 0.5f;                               // metres, for "@x,y,z"
 
-        // Every object in the scene that fits the path - following ALL branches, since parents can share a name too - then the one at "@x,y,z" if given, otherwise the first.
+        // Every object in the scene that fits the path - following ALL branches, since parents can share a name
+        // too - then the one at "@x,y,z" if given, otherwise the first.
         static Transform FindInScene(Scene scene, string path)
         {
             Vector3? near = null;
@@ -272,10 +297,15 @@ namespace CabinSwap
             return (segment, -1);
         }
 
-        void SwapCabin()
+        static GameObject _cabinRoot;                       // this visit's cabin; gone (null) once Bleak Inlet unloads
+
+        static void SwapCabin()
         {
+            if (_cabinRoot != null) return;                 // already built during this visit
+
             // Everything is built while switched off, so the game's scripts start with their final settings
             GameObject root = new GameObject(RootName);
+            _cabinRoot = root;
             root.SetActive(false);
             SceneManager.MoveGameObjectToScene(root, SceneManager.GetSceneByName("CanneryRegion"));
             root.transform.SetPositionAndRotation(CabinPosition, Quaternion.Euler(CabinRotation));
@@ -287,6 +317,8 @@ namespace CabinSwap
             ApplyOriginalSettings(cabin.transform);
             SetupWaterStorage(cabin.transform);
             AddShelterVolumes(cabin.transform);
+            BlockAnimals(root.transform);
+            AssignSaveIds(cabin.transform);
             root.SetActive(true);
 
             GameObject oldHouse = GameObject.Find(OldHousePath);
@@ -358,6 +390,47 @@ namespace CabinSwap
                 _gameMaterials[name] = material;
             }
             return material;
+        }
+
+        // Fixed save IDs. Safehouse customization, door states and container contents are saved per object ID.
+        // Without fixed IDs the cabin's objects got new ones on every load, so the game didn't recognise its saved
+        // decorations and spawned them again next to the cabin's own. Each ID comes from the object's fixed place
+        // in the cabin, so it's the same on every load; it goes into the game's own ID table before the cabin
+        // switches on (Safehouse Customization Plus registers its IDs the same way).
+        static void AssignSaveIds(Transform cabin)
+        {
+            foreach (Il2Cpp.ObjectGuid og in cabin.GetComponentsInChildren<Il2Cpp.ObjectGuid>(true))
+                Il2CppTLD.PDID.PdidTable.RuntimeAddOrReplace(og, StableGuid("CabinSwap/" + PlaceInCabin(cabin, og.transform)));
+        }
+
+        // e.g. "STR_SteepCabinA_InteriorObjects_Prefab#2/Interior Objects#0/OBJ_RugA_Prefab#14"
+        static string PlaceInCabin(Transform cabin, Transform t)
+        {
+            string p = $"{t.name}#{t.GetSiblingIndex()}";
+            for (Transform x = t.parent; x != null && x != cabin; x = x.parent)
+                p = $"{x.name}#{x.GetSiblingIndex()}/" + p;
+            return p;
+        }
+
+        static string StableGuid(string seed)
+        {
+            using var md5 = System.Security.Cryptography.MD5.Create();
+            return new Guid(md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes(seed))).ToString();
+        }
+
+        // A box-shaped navigation obstacle that carves the cabin out of Bleak Inlet's navigation map, so wolves
+        // can't path into or through it (the game's doors use these too; Seamless Interiors does the same)
+        static void BlockAnimals(Transform root)
+        {
+            GameObject block = new GameObject("CabinSwap_AnimalBlock");
+            block.transform.SetParent(root, false);
+
+            NavMeshObstacle obstacle = block.AddComponent<NavMeshObstacle>();
+            obstacle.shape = NavMeshObstacleShape.Box;
+            obstacle.center = new Vector3((FlatMin.x + FlatMax.x) / 2f, AnimalBlockHeight / 2f - 0.5f, (FlatMin.y + FlatMax.y) / 2f);
+            obstacle.size = new Vector3(FlatMax.x - FlatMin.x, AnimalBlockHeight, FlatMax.y - FlatMin.y);
+            obstacle.carving = true;                        // cut a hole in the map, not just nudge moving animals
+            obstacle.carveOnlyStationary = true;            // the cabin never moves: carve once
         }
 
         // Copies Bleak Inlet's own indoor-space and snow-blocking objects onto the cabin's markers
@@ -850,6 +923,20 @@ namespace CabinSwap
             }
         }
 
+        // The game restores a region's saved state here: moved, picked-up and broken-down decorations, container
+        // contents, door states - each found by its save ID. Any saved decoration whose ID doesn't exist yet is
+        // spawned again. So the cabin, with its fixed save IDs, must exist before this runs; if Bleak Inlet is
+        // loaded and the cabin isn't built yet, it's built right now. (Safehouse Customization Plus hooks here too.)
+        [HarmonyLib.HarmonyPatch(typeof(Il2Cpp.SaveGameSystem), nameof(Il2Cpp.SaveGameSystem.LoadSceneData))]
+        private static class BuildCabinBeforeRestore
+        {
+            private static void Prefix()
+            {
+                if (SceneManager.GetSceneByName("CanneryRegion").isLoaded)
+                    SwapCabin();
+            }
+        }
+
         // Written into the save file along with the game's own data. Guarded, so a problem here can never stop the game itself from saving.
         [HarmonyLib.HarmonyPatch(typeof(Il2Cpp.SaveGameSystem), nameof(Il2Cpp.SaveGameSystem.SaveSceneData))]
         private static class WaterStorageSave
@@ -871,7 +958,7 @@ namespace CabinSwap
         }
         static readonly Dictionary<int, TerrainBackup> _terrainBackups = new Dictionary<int, TerrainBackup>();
 
-        void FlattenGroundUnder(Transform root)
+        static void FlattenGroundUnder(Transform root)
         {
             float targetY = root.position.y - GroundBelowFloor;     // the cabin floor sits at its origin point
             float reach = FlatMargin + FalloffDistance;
@@ -956,7 +1043,7 @@ namespace CabinSwap
 
         //  GRASS: removed under the cabin (terrain grass and separate grass objects)
 
-        void ClearGrassUnder(Transform root)
+        static void ClearGrassUnder(Transform root)
         {
             Vector3 rootPos = root.position;
             Quaternion toLocal = Quaternion.Inverse(root.rotation);
